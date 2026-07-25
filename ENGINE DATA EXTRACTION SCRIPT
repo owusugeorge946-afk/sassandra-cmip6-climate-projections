@@ -1,0 +1,805 @@
+// ============================================================================
+// SASSANDRA RIVER BASIN MULTI-DECADAL CLIMATE PROJECTION STUDY
+// GOOGLE EARTH ENGINE DATA EXTRACTION SCRIPT
+//
+// AOI:
+// projects/ee-george946/assets/SASAN
+//
+// Main datasets:
+// CHIRPS daily rainfall
+// ERA5-Land daily temperature
+// NASA NEX-GDDP-CMIP6 daily downscaled projections
+//
+// Outputs:
+// 1. Basin boundary
+// 2. CHIRPS daily precipitation, 1981–2014
+// 3. ERA5-Land daily Tmax and Tmin, 1981–2014
+// 4. CMIP6 historical daily basin series, 1981–2014
+// 5. CMIP6 SSP2-4.5 daily basin series, 2015–2100
+// 6. CMIP6 SSP5-8.5 daily basin series, 2015–2100
+// 7. Historical rainfall and temperature maps
+// 8. Future mean-change maps
+//
+// Author workflow: George Owusu Amoah
+// ============================================================================
+
+
+// ============================================================================
+// 1. USER SETTINGS
+// ============================================================================
+
+var AOI_ASSET = 'projects/george-501512/assets/SASAN';
+
+var DRIVE_FOLDER = 'SASSANDRA_CMIP6_RESULTS';
+
+var OBS_START = '1981-01-01';
+var OBS_END   = '2015-01-01';
+
+var FUTURE_START = '2015-01-01';
+var FUTURE_END   = '2101-01-01';
+
+var BASELINE_START = '1995-01-01';
+var BASELINE_END   = '2015-01-01';
+
+var SCALE_OBS = 11132;
+var SCALE_CMIP = 27830;
+
+var MAX_PIXELS = 1e13;
+var TILE_SCALE = 4;
+
+// Models selected because they commonly provide precipitation,
+// maximum temperature and minimum temperature in NEX-GDDP-CMIP6.
+var MODELS = [
+  'ACCESS-CM2',
+  'CanESM5',
+  'CNRM-CM6-1',
+  'EC-Earth3',
+  'GFDL-ESM4',
+  'IPSL-CM6A-LR',
+  'MIROC6',
+  'MPI-ESM1-2-HR',
+  'MRI-ESM2-0',
+  'NorESM2-MM'
+];
+
+var SCENARIOS = ['ssp245', 'ssp585'];
+
+
+// ============================================================================
+// 2. LOAD AND PREPARE STUDY AREA
+// ============================================================================
+
+var basinFC = ee.FeatureCollection(AOI_ASSET);
+
+var basin = basinFC.geometry()
+  .dissolve(100)
+  .buffer(0, 100);
+
+Map.centerObject(basinFC, 7);
+
+Map.addLayer(
+  basinFC.style({
+    color: '000000',
+    fillColor: '00000000',
+    width: 2
+  }),
+  {},
+  'Sassandra River Basin'
+);
+
+print('AOI asset:', AOI_ASSET);
+print('AOI feature count:', basinFC.size());
+print('AOI area, km²:', basin.area(100).divide(1e6));
+
+Export.table.toDrive({
+  collection: basinFC,
+  description: 'SASAN_Basin_Boundary',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'SASAN_Basin_Boundary',
+  fileFormat: 'SHP'
+});
+
+
+// ============================================================================
+// 3. HELPER FUNCTIONS
+// ============================================================================
+
+function safeNumber(dictionary, propertyName) {
+  dictionary = ee.Dictionary(dictionary);
+
+  return ee.Algorithms.If(
+    dictionary.contains(propertyName),
+    dictionary.get(propertyName),
+    null
+  );
+}
+
+
+function addDateProperties(feature, date) {
+  date = ee.Date(date);
+
+  return ee.Feature(feature).set({
+    date: date.format('YYYY-MM-dd'),
+    year: date.get('year'),
+    month: date.get('month'),
+    day: date.get('day'),
+    doy: date.getRelative('day', 'year').add(1)
+  });
+}
+
+
+function imageMeanFeature(image, bandName, scale) {
+  image = ee.Image(image);
+  var date = image.date();
+
+  var stats = image.select(bandName).reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: basin,
+    scale: scale,
+    maxPixels: MAX_PIXELS,
+    bestEffort: true,
+    tileScale: TILE_SCALE
+  });
+
+  var feature = ee.Feature(null, {});
+  feature = addDateProperties(feature, date);
+
+  return feature.set(bandName, safeNumber(stats, bandName));
+}
+
+
+function convertCMIPImage(image) {
+  image = ee.Image(image);
+
+  var precipitation = image.select('pr')
+    .multiply(86400)
+    .rename('precipitation_mm_day');
+
+  var tasmax = image.select('tasmax')
+    .subtract(273.15)
+    .rename('tasmax_c');
+
+  var tasmin = image.select('tasmin')
+    .subtract(273.15)
+    .rename('tasmin_c');
+
+  return ee.Image.cat([
+      precipitation,
+      tasmax,
+      tasmin
+    ])
+    .copyProperties(image, image.propertyNames());
+}
+
+
+function cmipDailyFeature(image, model, scenario) {
+  image = ee.Image(image);
+  var date = image.date();
+
+  var stats = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: basin,
+    scale: SCALE_CMIP,
+    maxPixels: MAX_PIXELS,
+    bestEffort: true,
+    tileScale: TILE_SCALE
+  });
+
+  var feature = ee.Feature(null, {});
+  feature = addDateProperties(feature, date);
+
+  return feature.set({
+    model: model,
+    scenario: scenario,
+    precipitation_mm_day:
+      safeNumber(stats, 'precipitation_mm_day'),
+    tasmax_c:
+      safeNumber(stats, 'tasmax_c'),
+    tasmin_c:
+      safeNumber(stats, 'tasmin_c')
+  });
+}
+
+
+function mergeFeatureCollections(collectionList) {
+  return ee.FeatureCollection(
+    ee.List(collectionList).iterate(
+      function(collection, accumulator) {
+        return ee.FeatureCollection(accumulator)
+          .merge(ee.FeatureCollection(collection));
+      },
+      ee.FeatureCollection([])
+    )
+  );
+}
+
+
+// ============================================================================
+// 4. CHIRPS DAILY PRECIPITATION
+// ============================================================================
+
+var chirps = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+  .filterBounds(basin)
+  .filterDate(OBS_START, OBS_END)
+  .select('precipitation');
+
+print('CHIRPS image count:', chirps.size());
+print('CHIRPS first image:', chirps.first());
+
+var chirpsDaily = ee.FeatureCollection(
+  chirps.map(function(image) {
+    return imageMeanFeature(
+      image,
+      'precipitation',
+      5566
+    ).set({
+      dataset: 'CHIRPS_v2',
+      variable: 'precipitation',
+      unit: 'mm_day'
+    });
+  })
+).filter(ee.Filter.notNull(['precipitation']));
+
+print('CHIRPS exported rows:', chirpsDaily.size());
+print('CHIRPS example:', chirpsDaily.first());
+
+Export.table.toDrive({
+  collection: chirpsDaily,
+  description: 'SASAN_CHIRPS_Daily_1981_2014',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'SASAN_CHIRPS_Daily_1981_2014',
+  fileFormat: 'CSV',
+  selectors: [
+    'date',
+    'year',
+    'month',
+    'day',
+    'doy',
+    'dataset',
+    'variable',
+    'unit',
+    'precipitation'
+  ]
+});
+
+
+// ============================================================================
+// 5. ERA5-LAND DAILY TEMPERATURE
+// ============================================================================
+
+var era5 = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR')
+  .filterBounds(basin)
+  .filterDate(OBS_START, OBS_END);
+
+print('ERA5-Land image count:', era5.size());
+print('ERA5-Land first image band names:', era5.first().bandNames());
+
+var era5Daily = ee.FeatureCollection(
+  era5.map(function(image) {
+    image = ee.Image(image);
+
+    var tmax = image.select('temperature_2m_max')
+      .subtract(273.15)
+      .rename('tasmax_c');
+
+    var tmin = image.select('temperature_2m_min')
+      .subtract(273.15)
+      .rename('tasmin_c');
+
+    var combined = tmax.addBands(tmin);
+
+    var stats = combined.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: basin,
+      scale: SCALE_OBS,
+      maxPixels: MAX_PIXELS,
+      bestEffort: true,
+      tileScale: TILE_SCALE
+    });
+
+    var date = image.date();
+
+    return ee.Feature(null, {
+      date: date.format('YYYY-MM-dd'),
+      year: date.get('year'),
+      month: date.get('month'),
+      day: date.get('day'),
+      doy: date.getRelative('day', 'year').add(1),
+      dataset: 'ERA5_Land',
+      tasmax_c: safeNumber(stats, 'tasmax_c'),
+      tasmin_c: safeNumber(stats, 'tasmin_c')
+    });
+  })
+).filter(
+  ee.Filter.notNull([
+    'tasmax_c',
+    'tasmin_c'
+  ])
+);
+
+print('ERA5-Land exported rows:', era5Daily.size());
+print('ERA5-Land example:', era5Daily.first());
+
+Export.table.toDrive({
+  collection: era5Daily,
+  description: 'SASAN_ERA5Land_Daily_Temperature_1981_2014',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'SASAN_ERA5Land_Daily_Temperature_1981_2014',
+  fileFormat: 'CSV',
+  selectors: [
+    'date',
+    'year',
+    'month',
+    'day',
+    'doy',
+    'dataset',
+    'tasmax_c',
+    'tasmin_c'
+  ]
+});
+
+
+// ============================================================================
+// 6. CMIP6 COLLECTION CHECK
+// ============================================================================
+
+var cmip6Raw = ee.ImageCollection('NASA/GDDP-CMIP6')
+  .filterBounds(basin);
+
+print('CMIP6 total image count over AOI:', cmip6Raw.size());
+print('CMIP6 model names:', cmip6Raw.aggregate_array('model').distinct().sort());
+print('CMIP6 scenarios:', cmip6Raw.aggregate_array('scenario').distinct().sort());
+print('CMIP6 first image:', cmip6Raw.first());
+
+var selectedModelAvailability = ee.FeatureCollection(
+  MODELS.map(function(model) {
+    model = ee.String(model);
+
+    var historicalCount = cmip6Raw
+      .filter(ee.Filter.eq('model', model))
+      .filter(ee.Filter.eq('scenario', 'historical'))
+      .filterDate(OBS_START, OBS_END)
+      .size();
+
+    var ssp245Count = cmip6Raw
+      .filter(ee.Filter.eq('model', model))
+      .filter(ee.Filter.eq('scenario', 'ssp245'))
+      .filterDate(FUTURE_START, FUTURE_END)
+      .size();
+
+    var ssp585Count = cmip6Raw
+      .filter(ee.Filter.eq('model', model))
+      .filter(ee.Filter.eq('scenario', 'ssp585'))
+      .filterDate(FUTURE_START, FUTURE_END)
+      .size();
+
+    return ee.Feature(null, {
+      model: model,
+      historical_count: historicalCount,
+      ssp245_count: ssp245Count,
+      ssp585_count: ssp585Count
+    });
+  })
+);
+
+print('Selected model availability:', selectedModelAvailability);
+
+Export.table.toDrive({
+  collection: selectedModelAvailability,
+  description: 'SASAN_CMIP6_Model_Availability',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'SASAN_CMIP6_Model_Availability',
+  fileFormat: 'CSV'
+});
+
+
+// ============================================================================
+// 7. EXPORT CMIP6 HISTORICAL DAILY BASIN SERIES
+// ============================================================================
+
+var historicalCollections = MODELS.map(function(model) {
+
+  var modelCollection = cmip6Raw
+    .filter(ee.Filter.eq('model', model))
+    .filter(ee.Filter.eq('scenario', 'historical'))
+    .filterDate(OBS_START, OBS_END)
+    .select(['pr', 'tasmax', 'tasmin'])
+    .map(convertCMIPImage);
+
+  return ee.FeatureCollection(
+    modelCollection.map(function(image) {
+      return cmipDailyFeature(
+        image,
+        model,
+        'historical'
+      );
+    })
+  );
+});
+
+var cmipHistoricalDaily =
+  mergeFeatureCollections(historicalCollections)
+    .filter(
+      ee.Filter.notNull([
+        'precipitation_mm_day',
+        'tasmax_c',
+        'tasmin_c'
+      ])
+    );
+
+print('CMIP6 historical daily row count:', cmipHistoricalDaily.size());
+print('CMIP6 historical example:', cmipHistoricalDaily.first());
+
+Export.table.toDrive({
+  collection: cmipHistoricalDaily,
+  description: 'SASAN_CMIP6_Historical_Daily_1981_2014',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'SASAN_CMIP6_Historical_Daily_1981_2014',
+  fileFormat: 'CSV',
+  selectors: [
+    'date',
+    'year',
+    'month',
+    'day',
+    'doy',
+    'model',
+    'scenario',
+    'precipitation_mm_day',
+    'tasmax_c',
+    'tasmin_c'
+  ]
+});
+
+
+// ============================================================================
+// 8. EXPORT FUTURE DAILY SERIES BY MODEL AND SCENARIO
+//
+// Separate tasks are created to prevent one extremely large CSV.
+// Run all tasks from the Tasks panel.
+// ============================================================================
+
+MODELS.forEach(function(model) {
+
+  SCENARIOS.forEach(function(scenario) {
+
+    var futureCollection = cmip6Raw
+      .filter(ee.Filter.eq('model', model))
+      .filter(ee.Filter.eq('scenario', scenario))
+      .filterDate(FUTURE_START, FUTURE_END)
+      .select(['pr', 'tasmax', 'tasmin'])
+      .map(convertCMIPImage);
+
+    var futureTable = ee.FeatureCollection(
+      futureCollection.map(function(image) {
+        return cmipDailyFeature(
+          image,
+          model,
+          scenario
+        );
+      })
+    ).filter(
+      ee.Filter.notNull([
+        'precipitation_mm_day',
+        'tasmax_c',
+        'tasmin_c'
+      ])
+    );
+
+    var safeModel = model.replace(/-/g, '_');
+    var taskName =
+      'SASAN_CMIP6_' +
+      safeModel +
+      '_' +
+      scenario +
+      '_Daily_2015_2100';
+
+    Export.table.toDrive({
+      collection: futureTable,
+      description: taskName,
+      folder: DRIVE_FOLDER,
+      fileNamePrefix: taskName,
+      fileFormat: 'CSV',
+      selectors: [
+        'date',
+        'year',
+        'month',
+        'day',
+        'doy',
+        'model',
+        'scenario',
+        'precipitation_mm_day',
+        'tasmax_c',
+        'tasmin_c'
+      ]
+    });
+  });
+});
+
+
+// ============================================================================
+// 9. HISTORICAL OBSERVATION MAPS
+// ============================================================================
+
+var historicalRainMap = chirps
+  .filterDate(BASELINE_START, BASELINE_END)
+  .sum()
+  .divide(20)
+  .rename('annual_precipitation_mm')
+  .clip(basin);
+
+var historicalTmaxMap = era5
+  .filterDate(BASELINE_START, BASELINE_END)
+  .select('temperature_2m_max')
+  .mean()
+  .subtract(273.15)
+  .rename('tasmax_c')
+  .clip(basin);
+
+var historicalTminMap = era5
+  .filterDate(BASELINE_START, BASELINE_END)
+  .select('temperature_2m_min')
+  .mean()
+  .subtract(273.15)
+  .rename('tasmin_c')
+  .clip(basin);
+
+Map.addLayer(
+  historicalRainMap,
+  {
+    min: 800,
+    max: 2500,
+    palette: [
+      'fff7fb',
+      'd0d1e6',
+      '74a9cf',
+      '0570b0',
+      '023858'
+    ]
+  },
+  'Historical annual precipitation'
+);
+
+Map.addLayer(
+  historicalTmaxMap,
+  {
+    min: 25,
+    max: 36,
+    palette: [
+      '313695',
+      '74add1',
+      'ffffbf',
+      'f46d43',
+      'a50026'
+    ]
+  },
+  'Historical maximum temperature',
+  false
+);
+
+Map.addLayer(
+  historicalTminMap,
+  {
+    min: 15,
+    max: 27,
+    palette: [
+      '313695',
+      '74add1',
+      'ffffbf',
+      'f46d43',
+      'a50026'
+    ]
+  },
+  'Historical minimum temperature',
+  false
+);
+
+Export.image.toDrive({
+  image: historicalRainMap,
+  description: 'SASAN_Historical_Annual_Precipitation_1995_2014',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'SASAN_Historical_Annual_Precipitation_1995_2014',
+  region: basin,
+  scale: 5566,
+  maxPixels: MAX_PIXELS,
+  fileFormat: 'GeoTIFF'
+});
+
+Export.image.toDrive({
+  image: historicalTmaxMap.addBands(historicalTminMap),
+  description: 'SASAN_Historical_Temperature_1995_2014',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'SASAN_Historical_Temperature_1995_2014',
+  region: basin,
+  scale: SCALE_OBS,
+  maxPixels: MAX_PIXELS,
+  fileFormat: 'GeoTIFF'
+});
+
+
+// ============================================================================
+// 10. CMIP6 ENSEMBLE PERIOD MAP FUNCTIONS
+// ============================================================================
+
+function modelPeriodMean(model, scenario, startDate, endDate) {
+
+  var collection = cmip6Raw
+    .filter(ee.Filter.eq('model', model))
+    .filter(ee.Filter.eq('scenario', scenario))
+    .filterDate(startDate, endDate)
+    .select(['pr', 'tasmax', 'tasmin'])
+    .map(convertCMIPImage);
+
+  var annualYears = ee.List.sequence(
+    ee.Date(startDate).get('year'),
+    ee.Date(endDate).advance(-1, 'day').get('year')
+  );
+
+  var annual = ee.ImageCollection.fromImages(
+    annualYears.map(function(year) {
+      year = ee.Number(year);
+
+      var yearStart = ee.Date.fromYMD(year, 1, 1);
+      var yearEnd = yearStart.advance(1, 'year');
+      var yearCollection = collection.filterDate(yearStart, yearEnd);
+
+      var precipitation = yearCollection
+        .select('precipitation_mm_day')
+        .sum()
+        .rename('precipitation_mm_year');
+
+      var tasmax = yearCollection
+        .select('tasmax_c')
+        .mean()
+        .rename('tasmax_c');
+
+      var tasmin = yearCollection
+        .select('tasmin_c')
+        .mean()
+        .rename('tasmin_c');
+
+      return precipitation
+        .addBands(tasmax)
+        .addBands(tasmin)
+        .set('year', year)
+        .set('system:time_start', yearStart.millis());
+    })
+  );
+
+  return annual.mean()
+    .set('model', model)
+    .set('scenario', scenario)
+    .set('start_date', startDate)
+    .set('end_date', endDate);
+}
+
+
+function ensemblePeriodMean(scenario, startDate, endDate) {
+
+  var images = MODELS.map(function(model) {
+    return modelPeriodMean(
+      model,
+      scenario,
+      startDate,
+      endDate
+    );
+  });
+
+  return ee.ImageCollection.fromImages(images)
+    .median()
+    .clip(basin);
+}
+
+
+function historicalEnsembleMean() {
+
+  var images = MODELS.map(function(model) {
+    return modelPeriodMean(
+      model,
+      'historical',
+      BASELINE_START,
+      BASELINE_END
+    );
+  });
+
+  return ee.ImageCollection.fromImages(images)
+    .median()
+    .clip(basin);
+}
+
+
+// ============================================================================
+// 11. EXPORT ENSEMBLE CLIMATE-CHANGE MAPS
+// ============================================================================
+
+var historicalEnsemble = historicalEnsembleMean();
+
+var periods = [
+  {
+    label: 'Near_2021_2040',
+    start: '2021-01-01',
+    end: '2041-01-01'
+  },
+  {
+    label: 'Mid_2041_2060',
+    start: '2041-01-01',
+    end: '2061-01-01'
+  },
+  {
+    label: 'Late_2081_2100',
+    start: '2081-01-01',
+    end: '2101-01-01'
+  }
+];
+
+SCENARIOS.forEach(function(scenario) {
+
+  periods.forEach(function(period) {
+
+    var futureEnsemble = ensemblePeriodMean(
+      scenario,
+      period.start,
+      period.end
+    );
+
+    var precipitationChange = futureEnsemble
+      .select('precipitation_mm_year')
+      .subtract(
+        historicalEnsemble.select('precipitation_mm_year')
+      )
+      .divide(
+        historicalEnsemble.select('precipitation_mm_year')
+      )
+      .multiply(100)
+      .rename('precipitation_change_percent');
+
+    var tmaxChange = futureEnsemble
+      .select('tasmax_c')
+      .subtract(
+        historicalEnsemble.select('tasmax_c')
+      )
+      .rename('tasmax_change_c');
+
+    var tminChange = futureEnsemble
+      .select('tasmin_c')
+      .subtract(
+        historicalEnsemble.select('tasmin_c')
+      )
+      .rename('tasmin_change_c');
+
+    var changeImage = precipitationChange
+      .addBands(tmaxChange)
+      .addBands(tminChange)
+      .clip(basin);
+
+    var outputName =
+      'SASAN_CMIP6_Ensemble_Change_' +
+      scenario +
+      '_' +
+      period.label;
+
+    Export.image.toDrive({
+      image: changeImage,
+      description: outputName,
+      folder: DRIVE_FOLDER,
+      fileNamePrefix: outputName,
+      region: basin,
+      scale: SCALE_CMIP,
+      maxPixels: MAX_PIXELS,
+      fileFormat: 'GeoTIFF'
+    });
+
+  });
+});
+
+
+// ============================================================================
+// 12. SUMMARY
+// ============================================================================
+
+print('============================================================');
+print('SCRIPT SETUP COMPLETED');
+print('Open the Tasks panel and run all export tasks.');
+print('Google Drive output folder:', DRIVE_FOLDER);
+print('Future scenarios used:', SCENARIOS);
+print('Selected model count:', MODELS.length);
+print('============================================================');
