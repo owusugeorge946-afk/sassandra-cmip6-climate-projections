@@ -12,7 +12,7 @@
 # 7. Calculates mean-climate changes.
 # 8. Calculates precipitation and temperature extremes.
 # 9. Calculates SPI-3, SPI-6 and SPI-12 drought characteristics.
-# 10. Produces main manuscript and supplementary outputs.
+# 10. Produces main manuscript and supplementary outputs, including corrected Figures 7 and 8.
 # =============================================================================
 
 
@@ -3170,115 +3170,259 @@ save_figure(
 )
 
 
+
 # =============================================================================
-# 28. FIGURE 5: DROUGHT
+# 28. FIGURE 7: PROJECTED DROUGHT-MONTH FREQUENCY
 # =============================================================================
+
+required_drought_columns = [
+    "model",
+    "scenario",
+    "spi_scale",
+    "period",
+    "drought_month_frequency_percent"
+]
+
+missing_columns = [
+    column
+    for column in required_drought_columns
+    if column not in drought_summary.columns
+]
+
+if missing_columns:
+    raise KeyError(
+        "The drought summary is missing required columns: "
+        + ", ".join(missing_columns)
+    )
+
+figure7_data = (
+    drought_summary[
+        drought_summary["spi_scale"].isin([3, 12])
+    ]
+    .groupby(
+        [
+            "scenario",
+            "period",
+            "spi_scale"
+        ],
+        as_index=False
+    )
+    .agg(
+        ensemble_median_frequency=(
+            "drought_month_frequency_percent",
+            "median"
+        ),
+        q25=(
+            "drought_month_frequency_percent",
+            lambda values: values.quantile(0.25)
+        ),
+        q75=(
+            "drought_month_frequency_percent",
+            lambda values: values.quantile(0.75)
+        ),
+        number_of_models=(
+            "model",
+            "nunique"
+        )
+    )
+)
+
+figure7_data["period"] = pd.Categorical(
+    figure7_data["period"],
+    categories=PERIOD_ORDER,
+    ordered=True
+)
+
+figure7_data = figure7_data.sort_values(
+    [
+        "scenario",
+        "period",
+        "spi_scale"
+    ]
+)
 
 figure, axes = plt.subplots(
     1,
     2,
-    figsize=(
-        16,
-        5.5
-    )
+    figsize=(15, 5.8),
+    sharey=True
 )
 
-for axis, scenario in zip(
-    axes,
-    SCENARIO_ORDER
+bar_width = 0.34
+x_positions = np.arange(len(PERIOD_ORDER))
+
+for panel_number, (axis, scenario) in enumerate(
+    zip(axes, SCENARIO_ORDER)
 ):
+    scenario_data = figure7_data[
+        figure7_data["scenario"] == scenario
+    ].copy()
 
-    plot_data = (
-        drought_summary[
-            (
-                drought_summary["scenario"]
-                ==
-                scenario
-            )
-            &
-            (
-                drought_summary["spi_scale"]
-                .isin(
-                    [
-                        3,
-                        12
-                    ]
+    for offset, spi_scale in zip(
+        [-bar_width / 2, bar_width / 2],
+        [3, 12]
+    ):
+        spi_data = (
+            scenario_data[
+                scenario_data["spi_scale"] == spi_scale
+            ]
+            .set_index("period")
+            .reindex(PERIOD_ORDER)
+        )
+
+        medians = spi_data[
+            "ensemble_median_frequency"
+        ].to_numpy(dtype=float)
+
+        q25_values = spi_data[
+            "q25"
+        ].to_numpy(dtype=float)
+
+        q75_values = spi_data[
+            "q75"
+        ].to_numpy(dtype=float)
+
+        lower_errors = np.maximum(
+            medians - q25_values,
+            0
+        )
+
+        upper_errors = np.maximum(
+            q75_values - medians,
+            0
+        )
+
+        bars = axis.bar(
+            x_positions + offset,
+            medians,
+            width=bar_width,
+            label=f"SPI-{spi_scale}",
+            yerr=np.vstack(
+                [
+                    lower_errors,
+                    upper_errors
+                ]
+            ),
+            capsize=4,
+            edgecolor="black",
+            linewidth=0.7
+        )
+
+        for bar, median_value in zip(
+            bars,
+            medians
+        ):
+            if np.isfinite(median_value):
+                axis.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.35,
+                    f"{median_value:.2f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=9
                 )
-            )
-        ]
-        .groupby(
-            [
-                "period",
-                "spi_scale"
-            ],
-            as_index=False
-        )[
-            "drought_month_frequency_percent"
-        ]
-        .median()
-    )
-
-    pivot = plot_data.pivot(
-        index="period",
-        columns="spi_scale",
-        values="drought_month_frequency_percent"
-    ).reindex(
-        PERIOD_ORDER
-    )
-
-    pivot.columns = [
-        f"SPI-{int(column)}"
-        for column in pivot.columns
-    ]
-
-    pivot.plot(
-        kind="bar",
-        ax=axis
-    )
 
     axis.set_title(
-        SCENARIO_LABELS[
-            scenario
+        f"({chr(97 + panel_number)}) "
+        f"{SCENARIO_LABELS[scenario]}",
+        fontsize=12,
+        fontweight="bold"
+    )
+
+    axis.set_xticks(x_positions)
+    axis.set_xticklabels(
+        [
+            "Near future\n2021–2040",
+            "Mid-century\n2041–2060",
+            "Late century\n2081–2100"
         ]
     )
 
-    axis.set_xlabel(
-        ""
+    axis.set_xlabel("Projection period")
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.35
     )
-
-    axis.set_ylabel(
-        "Drought-month frequency (%)"
-    )
-
-    axis.tick_params(
-        axis="x",
-        rotation=25
-    )
-
     axis.legend(
-        frameon=False
+        frameon=False,
+        loc="upper left"
     )
+
+axes[0].set_ylabel(
+    "Drought-month frequency (%)"
+)
+
+maximum_frequency = figure7_data["q75"].max()
+
+if not np.isfinite(maximum_frequency):
+    maximum_frequency = 20
+
+axes[0].set_ylim(
+    0,
+    max(22, maximum_frequency + 3)
+)
 
 figure.tight_layout()
 
-save_figure(
-    figure,
-    "Figure_5_Projected_Drought_Characteristics.png"
+figure7_path = (
+    FIGURES_DIR
+    /
+    "Figure_7_Projected_Drought_Month_Frequency.png"
+)
+
+figure.savefig(
+    figure7_path,
+    dpi=DPI,
+    bbox_inches="tight",
+    facecolor="white"
+)
+
+plt.show()
+plt.close(figure)
+
+print("Saved:", figure7_path)
+
+figure7_data.to_csv(
+    TABLES_DIR
+    /
+    "Figure_7_Plotting_Data.csv",
+    index=False
 )
 
 
 # =============================================================================
-# 29. FIGURE 6: MODEL AGREEMENT
+# 29. FIGURE 8: MULTI-MODEL AGREEMENT
 # =============================================================================
 
+required_agreement_columns = [
+    "scenario",
+    "period",
+    "precipitation_change_percent_agreement_percent",
+    "tasmax_change_c_agreement_percent",
+    "tasmin_change_c_agreement_percent"
+]
+
+missing_columns = [
+    column
+    for column in required_agreement_columns
+    if column not in mean_ensemble.columns
+]
+
+if missing_columns:
+    raise KeyError(
+        "The ensemble summary is missing required columns: "
+        + ", ".join(missing_columns)
+    )
+
 agreement_variables = [
-    "precipitation_change_percent",
-    "tasmax_change_c",
-    "tasmin_change_c"
+    "precipitation_change_percent_agreement_percent",
+    "tasmax_change_c_agreement_percent",
+    "tasmin_change_c_agreement_percent"
 ]
 
 agreement_labels = [
-    "Precipitation",
+    "Annual precipitation",
     "Maximum temperature",
     "Minimum temperature"
 ]
@@ -3286,101 +3430,194 @@ agreement_labels = [
 figure, axes = plt.subplots(
     1,
     2,
-    figsize=(
-        16,
-        5.5
-    )
+    figsize=(15, 5.8),
+    sharey=True
 )
 
-for axis, scenario in zip(
-    axes,
-    SCENARIO_ORDER
+for panel_number, (axis, scenario) in enumerate(
+    zip(axes, SCENARIO_ORDER)
 ):
-
     scenario_data = (
         mean_ensemble[
-            mean_ensemble["scenario"]
-            ==
-            scenario
+            mean_ensemble["scenario"] == scenario
         ]
-        .set_index(
-            "period"
-        )
-        .reindex(
-            PERIOD_ORDER
-        )
+        .set_index("period")
+        .reindex(PERIOD_ORDER)
     )
 
-    matrix = np.array([
-        scenario_data[
-            f"{variable}_agreement_percent"
-        ].to_numpy()
-        for variable in agreement_variables
-    ])
+    agreement_matrix = np.vstack(
+        [
+            scenario_data[column].to_numpy(
+                dtype=float
+            )
+            for column in agreement_variables
+        ]
+    )
+
+    agreement_matrix = np.clip(
+        agreement_matrix,
+        0,
+        100
+    )
 
     image = axis.imshow(
-        matrix,
+        agreement_matrix,
         aspect="auto",
-        vmin=50,
-        vmax=100
+        vmin=0,
+        vmax=100,
+        cmap="YlGn"
     )
 
     axis.set_xticks(
-        np.arange(
-            len(PERIOD_ORDER)
-        )
+        np.arange(len(PERIOD_ORDER))
     )
-
     axis.set_xticklabels(
-        PERIOD_ORDER,
-        rotation=25,
-        ha="right"
+        [
+            "Near future\n2021–2040",
+            "Mid-century\n2041–2060",
+            "Late century\n2081–2100"
+        ]
     )
 
     axis.set_yticks(
-        np.arange(
-            len(agreement_labels)
-        )
+        np.arange(len(agreement_labels))
     )
-
     axis.set_yticklabels(
         agreement_labels
     )
 
     axis.set_title(
-        SCENARIO_LABELS[
-            scenario
-        ]
+        f"({chr(97 + panel_number)}) "
+        f"{SCENARIO_LABELS[scenario]}",
+        fontsize=12,
+        fontweight="bold"
     )
 
-    for row in range(
-        matrix.shape[0]
+    axis.set_xlabel(
+        "Projection period"
+    )
+
+    for row_index in range(
+        agreement_matrix.shape[0]
     ):
-
-        for column in range(
-            matrix.shape[1]
+        for column_index in range(
+            agreement_matrix.shape[1]
         ):
+            value = agreement_matrix[
+                row_index,
+                column_index
+            ]
 
-            axis.text(
-                column,
-                row,
-                f"{matrix[row, column]:.0f}%",
-                ha="center",
-                va="center"
+            text_color = (
+                "white"
+                if value < 45
+                else "black"
             )
 
-    figure.colorbar(
-        image,
-        ax=axis,
-        shrink=0.8,
-        label="Model agreement (%)"
-    )
+            axis.text(
+                column_index,
+                row_index,
+                f"{value:.0f}%",
+                ha="center",
+                va="center",
+                fontsize=11,
+                fontweight="bold",
+                color=text_color
+            )
 
-figure.tight_layout()
+colorbar = figure.colorbar(
+    image,
+    ax=axes,
+    orientation="vertical",
+    fraction=0.025,
+    pad=0.03
+)
 
-save_figure(
-    figure,
-    "Figure_6_Multi_Model_Agreement.png"
+colorbar.set_label(
+    "Models agreeing on change direction (%)"
+)
+
+colorbar.set_ticks(
+    [0, 20, 40, 60, 80, 100]
+)
+
+figure.subplots_adjust(
+    left=0.14,
+    right=0.90,
+    bottom=0.18,
+    top=0.88,
+    wspace=0.18
+)
+
+figure8_path = (
+    FIGURES_DIR
+    /
+    "Figure_8_Multi_Model_Agreement.png"
+)
+
+figure.savefig(
+    figure8_path,
+    dpi=DPI,
+    bbox_inches="tight",
+    facecolor="white"
+)
+
+plt.show()
+plt.close(figure)
+
+print("Saved:", figure8_path)
+
+figure8_table = mean_ensemble[
+    [
+        "scenario",
+        "period",
+        "number_of_models",
+        "precipitation_change_percent_agreement_percent",
+        "tasmax_change_c_agreement_percent",
+        "tasmin_change_c_agreement_percent"
+    ]
+].copy()
+
+figure8_table["scenario"] = (
+    figure8_table["scenario"]
+    .map(SCENARIO_LABELS)
+)
+
+figure8_table = figure8_table.rename(
+    columns={
+        "number_of_models":
+            "models",
+        "precipitation_change_percent_agreement_percent":
+            "precipitation_agreement_percent",
+        "tasmax_change_c_agreement_percent":
+            "maximum_temperature_agreement_percent",
+        "tasmin_change_c_agreement_percent":
+            "minimum_temperature_agreement_percent"
+    }
+)
+
+figure8_table["period"] = pd.Categorical(
+    figure8_table["period"],
+    categories=PERIOD_ORDER,
+    ordered=True
+)
+
+figure8_table = figure8_table.sort_values(
+    [
+        "scenario",
+        "period"
+    ]
+)
+
+figure8_table.to_csv(
+    TABLES_DIR
+    /
+    "Figure_8_and_Table_6_Agreement_Data.csv",
+    index=False
+)
+
+display(
+    figure8_table
 )
 
 
