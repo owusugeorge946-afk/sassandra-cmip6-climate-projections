@@ -1,38 +1,58 @@
-# =============================================================================
-# CREATE PROFESSIONAL README.md
-# =============================================================================
+# Sassandra River Basin CMIP6 climate projections
 
-readme_path = REPOSITORY_DIR / "README.md"
+Reproducibility resources for the study of mean climate, climate extremes and meteorological drought in the Sassandra River Basin, Côte d’Ivoire and Guinea.
 
-readme_text = f"""# Bias-Corrected CMIP6 Climate Projections for the Sassandra River Basin
+## Final methodological decisions
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Google Earth Engine](https://img.shields.io/badge/Google%20Earth%20Engine-JavaScript-green.svg)](https://earthengine.google.com/)
-[![CMIP6](https://img.shields.io/badge/Climate%20Models-CMIP6-orange.svg)](https://wcrp-cmip.org/cmip6/)
+- **Climate data:** ten existing bias-adjusted and statistically downscaled NASA NEX-GDDP-CMIP6 models under SSP2-4.5 and SSP5-8.5.
+- **Historical comparison baseline:** 1995–2014 for all three future periods: 2021–2040, 2041–2060 and 2081–2100.
+- **Additional bias adjustment:** a separate monthly precipitation QDM sensitivity experiment was calibrated over 1981–2000 and evaluated against CHIRPS over 2001–2014. Mean out-of-sample precipitation performance worsened: RMSE 47.621 → 50.167 mm, MAE 35.936 → 36.563 mm, correlation 0.826 → 0.805 and KGE 0.808 → 0.780. **That additional adjustment was not used for the final projections.**
+- **Daily temperature QC:** three days with `tasmax_c < tasmin_c` were excluded from DTR computations only; the original observations were retained in the audit.
+- **Extreme indices:** TXmean, TNmean, TXx, TNn, DTR, PRCPTOT, Rx1day, Rx5day, CDD, CWD, TX90p, TN90p and WSDI. Temperature percentile thresholds use a model-specific 1995–2014 reference with a five-day calendar window and leave-one-year-out estimation; this is not the formal ETCCDI bootstrap.
+- **Drought:** SPI-3 and SPI-12, calibrated to 1995–2014 using month-specific gamma fits; drought threshold SPI ≤ −1.0. No final SPI-6 results are reported.
+- **Ensemble periods:** mean of ten *model-paired* future-minus-baseline changes; figure uncertainty bars show ±1 inter-model sample standard deviation, not a confidence interval.
+- **Trends:** conventional Mann–Kendall and Sen slopes over 2021–2100 annual **multi-model-median** series, with separate residual autocorrelation and HAC regression sensitivity checks. HAC p-values are not modified Mann–Kendall p-values.
 
-## Overview
+## Repository files
 
-This repository contains the reproducible Google Earth Engine and Google Colab workflows used to evaluate historical climate simulations and assess future changes in mean climate, climate extremes, and drought across the Sassandra River Basin in Côte d’Ivoire and Guinea.
+| File | Purpose |
+| --- | --- |
+| `ENGINE DATA EXTRACTION SCRIPT` | Original Earth Engine extraction workflow; examine the asset paths before running. |
+| `Sassandra_CMIP6_Final_Complete_Colab_Script.py` | **Legacy pre-reconciliation analysis. Do not use its QDM/SPI-6 outputs for the revised manuscript.** This script is retained for historical provenance only. |
+| `Sassandra_Final_Verified_Results.py` | Current figure and table post-processor that reads the verified Step 9, 12, 13 and 15 CSV outputs. It does not apply extra QDM. |
 
-The analysis integrates CHIRPS precipitation, ERA5-Land temperature, and ten CMIP6 climate models. Monthly Quantile Delta Mapping is applied to reduce systematic model biases before assessing future changes under SSP2-4.5 and SSP5-8.5.
+The Step 9–19 Google Colab reconstruction files and their audited CSV exports are the authoritative source for revised manuscript results. The post-processor does **not** recreate the full climate or SPI reconstruction from raw satellite data.
 
-## Study Objectives
+## Run the verified post-processor
 
-The workflow was developed to:
+In Google Colab, mount your Google Drive, then run:
 
-1. evaluate the historical performance of selected CMIP6 models;
-2. apply bias correction to precipitation and temperature simulations;
-3. assess projected changes in annual precipitation and temperature;
-4. quantify changes in rainfall and temperature extremes;
-5. evaluate future drought frequency, duration, and severity;
-6. characterize inter-model spread and agreement.
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+%run Sassandra_Final_Verified_Results.py
+```
 
-## Study Area
+The script reads the default folder:
 
-The study focuses on the Sassandra River Basin, a major transboundary river system extending from Guinea through western Côte d’Ivoire to the Gulf of Guinea.
+```
+/content/drive/MyDrive/Sassandra_CMIP6_Final_Verification
+```
 
-Google Earth Engine asset:
+Or run locally with explicit paths:
 
-```text
-projects/ee-george946/assets/SASAN
+```bash
+python Sassandra_Final_Verified_Results.py \
+  --source /path/to/Sassandra_CMIP6_Final_Verification \
+  --output /path/to/verified_figures
+```
+
+The script checks input schemas, historical baselines, ten-model completeness and three reporting periods before writing figure and summary files. It stops on missing or ambiguous source exports rather than substituting unsupported data.
+
+## Reproducibility boundaries
+
+The current repository does not yet contain all source data or complete Step 9–19 reconstruction notebooks. The newer script is therefore a reproducible **post-processing step**, conditional on access to the verified output CSVs; it should not be described as a complete raw-data-to-results pipeline. Full reproduction requires archiving the original source-data inventory, Earth Engine extraction settings, Colab reconstruction code, dependency versions and the final quality-control reports.
+
+## Citation
+
+Please cite the peer-reviewed article once its final bibliographic details are available. No DOI is assigned in this README.
