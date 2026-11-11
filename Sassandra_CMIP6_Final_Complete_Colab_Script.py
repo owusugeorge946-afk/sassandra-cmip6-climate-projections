@@ -1,3 +1,13 @@
+# LEGACY PRE-RECONCILIATION SCRIPT — NOT FOR FINAL MANUSCRIPT RESULTS
+# This archived analysis applies additional QDM and includes SPI-6; both were
+# superseded by the verified Step 9–19 Colab reconstruction. The independent
+# additional precipitation-QDM test worsened mean validation skill, so final
+# projections retain the existing bias-adjusted NEX-GDDP-CMIP6 series.
+# For verified figure/table post-processing, use
+# Sassandra_Final_Verified_Results.py and the audited CSV files in Drive.
+# The legacy code below is preserved verbatim for provenance.
+# =============================================================================
+
 # =============================================================================
 # SASSANDRA RIVER BASIN MULTI-DECADAL CLIMATE PROJECTION ANALYSIS
 # FINAL ROBUST GOOGLE COLAB SCRIPT
